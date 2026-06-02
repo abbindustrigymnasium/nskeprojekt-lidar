@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <title>LiDAR Punktmoln</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #0a0a0a; font-family: sans-serif; color: #ccc; }
+    #ui { position: absolute; top: 10px; left: 10px; padding: 10px; background: rgba(0,0,0,0.6); border-radius: 6px; font-size: 13px; width: 260px; }
+    textarea { width: 100%; height: 100px; background: #111; color: #6c6; border: 1px solid #333; font-family: monospace; font-size: 11px; box-sizing: border-box; }
+    button { margin-top: 6px; padding: 6px 12px; cursor: pointer; }
+    label { display: block; margin-top: 6px; }
+    #count { margin-top: 6px; color: #9cf; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div><b>LiDAR Punktmoln</b></div>
+    <div style="font-size:11px;color:#888">Klistra in CSV (pan,tilt,dist_mm):</div>
+    <textarea id="data" placeholder="pan,tilt,dist_mm&#10;20,70,540&#10;..."></textarea>
+    <label><input type="checkbox" id="flipPan"> Spegla pan (vänster/höger)</label>
+    <label><input type="checkbox" id="flipTilt"> Spegla tilt (upp/ner)</label>
+    <button id="render">Rendera</button>
+    <div id="count">Punkter: 0</div>
+    <div style="font-size:11px;color:#888;margin-top:4px">Mus: rotera · scroll: zoom · höger: panorera</div>
+  </div>
+  <canvas id="canvas"></canvas>
+
+  <script type="importmap">
+    { "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // --- Kalibrering (från din mätning) ---
+    const PAN_CENTER  = 90;    // pan-värde rakt fram
+    const TILT_HORIZON = 130;  // tilt-värde rakt fram horisontellt
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.01, 100);
+    camera.position.set(2, 2, 2);
+    const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(devicePixelRatio);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    scene.add(new THREE.AxesHelper(0.3));
+    scene.add(new THREE.GridHelper(3, 30, 0x444444, 0x222222));
+
+    let cloud = null;
+
+    function toXYZ(pan, tilt, dist_mm, flipPan, flipTilt) {
+      const dist = dist_mm / 1000;  // mm → meter
+      let az = (pan - PAN_CENTER) * Math.PI / 180;   // positiv = vänster
+      let el = (TILT_HORIZON - tilt) * Math.PI / 180; // positiv = upp
+      if (flipPan)  az = -az;
+      if (flipTilt) el = -el;
+      return {
+        x: dist * Math.cos(el) * Math.sin(az),
+        y: dist * Math.sin(el),
+        z: dist * Math.cos(el) * Math.cos(az),
+        dist
+      };
+    }
+
+    function parseCSV(text) {
+      const pts = [];
+      for (const line of text.split('\n')) {
+        const t = line.trim();
+        if (!t || t.startsWith('pan') || t.startsWith('SCAN')) continue;
+        const parts = t.split(',');
+        if (parts.length < 3) continue;
+        const pan = parseFloat(parts[0]);
+        const tilt = parseFloat(parts[1]);
+        const dist = parseFloat(parts[2]);
+        if (isNaN(pan) || isNaN(tilt) || isNaN(dist)) continue;
+        pts.push({ pan, tilt, dist });
+      }
+      return pts;
+    }
+
+    function render() {
+      const raw = parseCSV(document.getElementById('data').value);
+      const flipPan  = document.getElementById('flipPan').checked;
+      const flipTilt = document.getElementById('flipTilt').checked;
+
+      const pts = raw.map(r => toXYZ(r.pan, r.tilt, r.dist, flipPan, flipTilt));
+
+      const positions = new Float32Array(pts.length * 3);
+      const colors = new Float32Array(pts.length * 3);
+      let maxD = 0;
+      for (const p of pts) if (p.dist > maxD) maxD = p.dist;
+
+      for (let i = 0; i < pts.length; i++) {
+        positions[i*3]   = pts[i].x;
+        positions[i*3+1] = pts[i].y;
+        positions[i*3+2] = pts[i].z;
+        const tt = maxD > 0 ? pts[i].dist / maxD : 0;
+        colors[i*3]   = 1.0 - tt*0.7;
+        colors[i*3+1] = 1.0 - tt*0.5;
+        colors[i*3+2] = 0.2 + tt*0.8;
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const mat = new THREE.PointsMaterial({ size: 0.015, vertexColors: true, sizeAttenuation: true });
+
+      if (cloud) scene.remove(cloud);
+      cloud = new THREE.Points(geo, mat);
+      scene.add(cloud);
+      document.getElementById('count').textContent = `Punkter: ${pts.length}`;
+    }
+
+    document.getElementById('render').addEventListener('click', render);
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+  </script>
+</body>
+</html>
